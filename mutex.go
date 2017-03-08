@@ -26,7 +26,7 @@ type Mutex struct {
 
 	nodem sync.Mutex
 
-	pools []Pool
+	connWrappers []RedisConnWrapper
 }
 
 // Lock locks m. In case it returns an error on failure, you may retry to acquire the lock by calling this method again.
@@ -43,12 +43,12 @@ func (m *Mutex) Lock() error {
 		if i != 0 {
 			time.Sleep(m.delay)
 		}
-		
+
 		start := time.Now()
 
 		n := 0
-		for _, pool := range m.pools {
-			ok := m.acquire(pool, value)
+		for _, connWrapper := range m.connWrappers {
+			ok := m.acquire(connWrapper, value)
 			if ok {
 				n++
 			}
@@ -60,8 +60,8 @@ func (m *Mutex) Lock() error {
 			m.until = until
 			return nil
 		}
-		for _, pool := range m.pools {
-			m.release(pool, value)
+		for _, connWrapper := range m.connWrappers {
+			m.release(connWrapper, value)
 		}
 	}
 
@@ -74,8 +74,8 @@ func (m *Mutex) Unlock() bool {
 	defer m.nodem.Unlock()
 
 	n := 0
-	for _, pool := range m.pools {
-		ok := m.release(pool, m.value)
+	for _, connWrapper := range m.connWrappers {
+		ok := m.release(connWrapper, m.value)
 		if ok {
 			n++
 		}
@@ -89,8 +89,8 @@ func (m *Mutex) Extend() bool {
 	defer m.nodem.Unlock()
 
 	n := 0
-	for _, pool := range m.pools {
-		ok := m.touch(pool, m.value, int(m.expiry/time.Millisecond))
+	for _, connWrapper := range m.connWrappers {
+		ok := m.touch(connWrapper, m.value, int(m.expiry/time.Millisecond))
 		if ok {
 			n++
 		}
@@ -107,9 +107,8 @@ func (m *Mutex) genValue() (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-func (m *Mutex) acquire(pool Pool, value string) bool {
-	conn := pool.Get()
-	defer conn.Close()
+func (m *Mutex) acquire(connWrapper RedisConnWrapper, value string) bool {
+	conn := connWrapper.Get()
 	reply, err := redis.String(conn.Do("SET", m.name, value, "NX", "PX", int(m.expiry/time.Millisecond)))
 	return err == nil && reply == "OK"
 }
@@ -122,9 +121,8 @@ var deleteScript = redis.NewScript(1, `
 	end
 `)
 
-func (m *Mutex) release(pool Pool, value string) bool {
-	conn := pool.Get()
-	defer conn.Close()
+func (m *Mutex) release(connWrapper RedisConnWrapper, value string) bool {
+	conn := connWrapper.Get()
 	status, err := deleteScript.Do(conn, m.name, value)
 	return err == nil && status != 0
 }
@@ -137,9 +135,8 @@ var touchScript = redis.NewScript(1, `
 	end
 `)
 
-func (m *Mutex) touch(pool Pool, value string, expiry int) bool {
-	conn := pool.Get()
-	defer conn.Close()
+func (m *Mutex) touch(connWrapper RedisConnWrapper, value string, expiry int) bool {
+	conn := connWrapper.Get()
 	status, err := redis.String(touchScript.Do(conn, m.name, value, expiry))
 	return err == nil && status != "ERR"
 }
